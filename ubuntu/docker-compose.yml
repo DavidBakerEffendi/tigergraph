@@ -1,0 +1,19 @@
+version: '3'
+services:
+    tigergraph:
+        container_name: tigergraph-ubuntu
+        build: .
+        ports:
+            - "14022:22"
+            - "9000:9000"
+            - "14240:14240"
+        volumes:
+            - tigergraph-ubuntu:/var/lib/tigergraph/data
+        ulimits:
+            nofile:
+                soft: 1000000
+                hard: 1000000
+        stdin_open: true
+        tty: true
+volumes:
+    tigergraph-ubuntu:
