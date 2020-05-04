@@ -2,9 +2,12 @@ FROM bitnami/minideb:jessie
 
 ENV DEV_VERSION 2.6.0 
 
+# Crack the CPU and MEM check
+COPY ./resources/os_utils /tmp/os_utils
+
 RUN useradd -ms /bin/bash tigergraph && \
   apt-get -qq update && \
-  apt-get install -y --no-install-recommends curl iproute2 net-tools cron ntp locales tar jq uuid-runtime openssh-client openssh-server > /dev/null && \
+  apt-get install -y --no-install-recommends curl vim iproute2 net-tools cron ntp locales tar uuid-runtime openssh-client openssh-server > /dev/null && \
   mkdir /var/run/sshd && \
   echo 'root:root' | chpasswd && \
   echo 'tigergraph:tigergraph' | chpasswd && \
@@ -15,6 +18,9 @@ RUN useradd -ms /bin/bash tigergraph && \
   cd /home/tigergraph/ && \
   tar xfz tigergraph-dev.tar.gz && \
   rm -f tigergraph-dev.tar.gz && \
+  # Remove original OS check 
+  rm /home/tigergraph/tigergraph-${DEV_VERSION}-developer/utils/os_utils && \
+  mv /tmp/os_utils /home/tigergraph/tigergraph-${DEV_VERSION}-developer/utils/os_utils && \
   cd /home/tigergraph/tigergraph-* && \
   ./install.sh -n || : && \
   rm -fR /home/tigergraph/tigergraph-* && \
