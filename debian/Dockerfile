@@ -4,7 +4,7 @@ ENV DEV_VERSION 2.6.0
 
 RUN useradd -ms /bin/bash tigergraph && \
   apt-get -qq update && \
-  apt-get install -y --no-install-recommends curl iproute2 net-tools cron ntp locales tar jq uuid-runtime openssh-client openssh-server && \
+  apt-get install -y --no-install-recommends curl iproute2 net-tools cron ntp locales tar jq uuid-runtime openssh-client openssh-server > /dev/null && \
   mkdir /var/run/sshd && \
   echo 'root:root' | chpasswd && \
   echo 'tigergraph:tigergraph' | chpasswd && \
@@ -30,4 +30,4 @@ RUN useradd -ms /bin/bash tigergraph && \
   su - tigergraph -c "/home/tigergraph/.gium/gadmin config-apply"
 
 EXPOSE 22
-ENTRYPOINT /usr/sbin/sshd && su - tigergraph bash -c "script -q /dev/null" && gadmin start
+ENTRYPOINT /usr/sbin/sshd && su - tigergraph bash -c "/home/tigergraph/.gium/gadmin start && script -q /dev/null"
