@@ -5,7 +5,7 @@ resource sensitive environments e.g. CI/CD. The Docker image starts `gadmin` whe
 the container spins up.
 
 The original version of the TigerGraph Docker image can be found [here](https://github.com/tigergraph/ecosys/tree/master/demos/guru_scripts/docker).
-If you would like to create and push your own version of a TigerGraph image, simply edit the credentials in `config.conf`.
+If you would like to create and push your own version of a TigerGraph image, simply edit the credentials in `acc.conf`.
 
 ## Debian Jessie
 
