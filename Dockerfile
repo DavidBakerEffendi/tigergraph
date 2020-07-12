@@ -38,4 +38,4 @@ RUN useradd -ms /bin/bash tigergraph && \
   chown -R tigergraph:tigergraph /home/tigergraph
 
 EXPOSE 22
-ENTRYPOINT /usr/sbin/sshd && su - tigergraph bash -c "/home/tigergraph/.gium/gadmin start && tail -f /dev/null"
+ENTRYPOINT /usr/sbin/sshd && su - tigergraph bash -c "/home/tigergraph/tigergraph/app/cmd/gadmin start all && tail -f /dev/null"
