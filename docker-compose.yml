@@ -9,6 +9,11 @@ services:
             - "14240:14240"
         volumes:
             - tigergraph-debian:/var/lib/tigergraph/data
+        healthcheck:
+            test: ["CMD-SHELL", "curl --fail http://localhost:9000/echo || exit 1"]
+            interval: 5s
+            timeout: 10s
+            retries: 5
         ulimits:
             nofile:
                 soft: 1000000
