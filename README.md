@@ -7,6 +7,8 @@ the container spins up.
 The original version of the TigerGraph Docker image can be found 
 [here](https://github.com/tigergraph/ecosys/tree/master/demos/guru_scripts/docker).
 
+For a detailed tutorial on how this image works, please read [my article on Medium](https://towardsdatascience.com/efficient-use-of-tigergraph-and-docker-5e7f9918bf53).
+
 ## Description
 
 The Debian image is Bitnami's minideb image as the base image. This can be built
