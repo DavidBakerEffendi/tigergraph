@@ -2,7 +2,7 @@ FROM bitnami/minideb:jessie
 
 ENV DEV_VERSION 3.0.0
 
-# Crack the CPU and MEM check
+# Copy resources
 COPY ./resources/os_utils /tmp/os_utils
 
 RUN useradd -ms /bin/bash tigergraph && \
@@ -35,7 +35,15 @@ RUN useradd -ms /bin/bash tigergraph && \
   mkdir -p /home/tigergraph/.gsql_fcgi && \
   touch /home/tigergraph/.gsql_fcgi/RESTPP.socket.1 && \
   chmod 644 /home/tigergraph/.gsql_fcgi/RESTPP.socket.1 && \
-  chown -R tigergraph:tigergraph /home/tigergraph
+  chown -R tigergraph:tigergraph /home/tigergraph && \
+  mkdir /docker-entrypoint-initdb.d
 
 EXPOSE 22
-ENTRYPOINT /usr/sbin/sshd && su - tigergraph bash -c "/home/tigergraph/tigergraph/app/cmd/gadmin start all && tail -f /dev/null"
+
+ENTRYPOINT /usr/sbin/sshd && su - tigergraph bash -c "/home/tigergraph/tigergraph/app/cmd/gadmin start all" && \
+  if [ -n "$(ls -A /docker-entrypoint-initdb.d/ 2>/dev/null)" ]; then \
+    for file in /docker-entrypoint-initdb.d/*.gsql; do \
+      su - tigergraph bash -c "/home/tigergraph/tigergraph/app/cmd/gsql -f "$file"" || continue; \
+    done \ 
+  fi && \
+  su - tigergraph bash -c "tail -f /home/tigergraph/tigergraph/log/admin/ADMIN.INFO"
