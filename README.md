@@ -18,7 +18,7 @@ packages are excluded. The only text editor available is Vim but binaries like
 
 ## Running Scripts at Startup
 
-If you have a GSQL script to run at startup you can bind it to `docker-entrypoint-init.d` using Docker volumes. All scripts suffixed with `.gsql` will be executed by the `gsql` command by user `tigergraph`.
+If you have a GSQL script to run at startup you can bind it to `docker-entrypoint-initdb.d` using Docker volumes. All scripts suffixed with `.gsql` will be executed by the `gsql` command by user `tigergraph`.
 
 ## Configuration
 
