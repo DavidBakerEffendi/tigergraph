@@ -16,9 +16,13 @@ and pushed using `run.sh`. All ecosys code is not installed and some unnecessary
 packages are excluded. The only text editor available is Vim but binaries like 
 `wget`, `git`, `unzip`, `emacs`, etc. are removed.
 
+Each directory found in this repository correlate to the tag under each image on the
+[DockerHub](https://hub.docker.com/repository/docker/dbakereffendi/tigergraph).
+
 ## Running Scripts at Startup
 
-If you have a GSQL script to run at startup you can bind it to `docker-entrypoint-initdb.d` using Docker volumes. All scripts suffixed with `.gsql` will be executed by the `gsql` command by user `tigergraph`.
+If you have a GSQL script to run at startup you can bind it to `docker-entrypoint-initdb.d` 
+using Docker volumes. All scripts suffixed with `.gsql` will be executed by the `gsql` command by user `tigergraph`.
 
 ## Configuration
 
