@@ -182,7 +182,8 @@ check_root_space(){
   done
   size=$(df -Pk $f | tail -1 | awk '{print $4}')
   let "size_GB = size / 1024 / 1024"
-  minimum=20
+  warn "Disk size limit changed to 6 GB"
+  minimum=6
   if [ $size_GB -lt $minimum ]; then
     warn "TigerGraph.Root.Dir: $GSQL_ROOT_DIR does NOT have enough available disk space: $size_GB GB, required at least $minimum GB"
     return $E_DISKNOTENOUGH
@@ -295,22 +296,36 @@ set_user(){
 }
 
 set_root(){
-  mkdir -p $GSQL_ROOT_DIR
-  check_fail $? $E_CREATEPATHFAIL "${bldred}Failed to creat install directory: ${GSQL_ROOT_DIR}. Program terminated. $txtrst"
-  local fs_type=$(df -PT $GSQL_ROOT_DIR | tail -1 | awk '{print $2}')
+  note "Setting tigergraph root dir: $root_dir"
+  local root_dir=$1
+  #find deepest exist folder
+  local parent_dir=$root_dir
+  while ! [ -d $parent_dir ]; do parent_dir=$(dirname $parent_dir); done
+  mkdir -p "$root_dir"
+  check_fail $? $E_CREATEPATHFAIL "${bldred}Failed to creat install directory: ${root_dir}. Program terminated. $txtrst"
+  local fs_type=$(df -PT $root_dir | tail -1 | awk '{print $2}')
   if [ "$fs_type" = "tmpfs" ]; then
-    error "TigerGraph.Root.Dir installation directory ($GSQL_ROOT_DIR) cannot be 'tmpfs' filesystem type."
-    note "Please specfiy a non tmpfs type TigerGraph.Root.Dir installation path, and retry."
+    error "TigerGraph.App.Root installation directory ($root_dir) cannot be 'tmpfs' filesystem type."
+    note "Please specfiy a non tmpfs type TigerGraph.App.Root installation path, and retry."
     exit $E_CREATEPATHFAIL
   fi
-  # set +rx permissions to GSQL_ROOT_DIR directory and all its parent directores
-  # start from the GSQL_ROOT_DIR, and works on every parent dir, until it encounters '/'
+  # set +rx permissions to GSQL_xxx_ROOT directory and its parent directores
   # Does not chmod '/'
-  local f=$GSQL_ROOT_DIR
+  local f=$root_dir
   while [[ $f != "/" ]]; do chmod a+rx $f; f=$(dirname $f); done;
-  # user GSQL_USER may not exist
-  # need to do one more time after set_user
-  chown -R $GSQL_USER $GSQL_ROOT_DIR &>/dev/null
+  # set +w permissions to GSQL_xxx_ROOT parent dir
+  chmod a+w $root_dir/.. || warn "add write permission for root_dir/.. failed"
+  # don't use '-R', if it is large, -R will take very long time
+  # to be safe, change chown tigergraph:tigergraph to separate cmds
+  chown $GSQL_USER "$root_dir"
+  chgrp $GSQL_USER "$root_dir"
+  # change all the new created folder to GSQL_USER as well
+  # since these parent folders might be created during installation as root privilege.
+  while [[ "$root_dir" != "$parent_dir" ]]; do
+    chown $GSQL_USER "$root_dir";
+    chgrp $GSQL_USER "$root_dir"
+    root_dir=$(dirname $root_dir);
+  done;
 }
 
 create_root(){

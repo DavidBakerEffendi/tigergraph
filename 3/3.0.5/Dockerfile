@@ -1,6 +1,6 @@
 FROM bitnami/minideb:jessie
 
-ENV DEV_VERSION 3.0.0
+ENV DEV_VERSION 3.0.5
 
 # Copy resources
 COPY ./resources/os_utils /tmp/os_utils
