@@ -81,24 +81,6 @@ RUN apt-get -qq update && \
   tar czfh ${INSTALL_DIR}/tmp/initdata.tgz -C ${INSTALL_DIR}/data . && \
   # Clean up temp files
   rm -Rf /tmp/* && \
-  # Optimize files and folders
-  cd ${INSTALL_DIR}/app/${DEV_VERSION}/bin/ && \
-  rm -f libprofiler.so.0 libprofiler.so.0.4.18 libtcmalloc.so.4 libtcmalloc.so.4.5.3 libtigergraph.so tg_shadower && \
-  ln -s libprofiler.so libprofiler.so.0 && \
-  ln -s libprofiler.so libprofiler.so.0.4.18 && \
-  ln -s libtcmalloc.so libtcmalloc.so.4 && \
-  ln -s libtcmalloc.so libtcmalloc.so.4.5.3 && \
-  ln -s ../dev/gdk/gsdk/lib/tg_3.0.5_dev/libtigergraph.so . && \
-  ln -s ../../../app/cmd/.tg_shadower tg_shadower && \
-  cd ${INSTALL_DIR}/app/${DEV_VERSION}/.syspre/usr/lib/x86_64-linux-gnu/dri/ && \
-  rm -f r200_dri.so nouveau_vieux_dri.so i965_dri.so i915_dri.so && \
-  ln -s radeon_dri.so r200_dri.so && \
-  ln -s radeon_dri.so nouveau_vieux_dri.so && \
-  ln -s radeon_dri.so i965_dri.so && \
-  ln -s radeon_dri.so i915_dri.so && \
-  cd ${INSTALL_DIR}/app/${DEV_VERSION}/zk/lib/ && \
-  rm -f log4j-1.2.17.jar && \
-  ln -s ../../kafka/libs/log4j-1.2.17.jar . && \
   # Finalize image
   echo "export VISIBLE=now" >> /etc/profile && \
   echo "export USER=tigergraph" >> /home/tigergraph/.bash_tigergraph && \
