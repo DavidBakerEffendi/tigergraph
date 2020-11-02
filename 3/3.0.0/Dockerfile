@@ -39,27 +39,20 @@ RUN apt-get -qq update && \
   su - tigergraph -c "${INSTALL_DIR}/app/${DEV_VERSION}/cmd/gadmin stop all -y" && \
   # Original cleanups
   rm -fR /home/tigergraph/tigergraph-* && \
-  rm -fR /home/tigergraph/tigergraph/app/${DEV_VERSION}/syspre_pkg && \
-  rm -f /home/tigergraph/tigergraph/gium_prod.tar.gz && \
-  rm -f /home/tigergraph/tigergraph/pkg_pool/tigergraph_*.tar.gz && \
+  rm -fR ${INSTALL_DIR}/app/${DEV_VERSION}/syspre_pkg && \
+  rm -f ${INSTALL_DIR}/gium_prod.tar.gz && \
+  rm -f ${INSTALL_DIR}/pkg_pool/tigergraph_*.tar.gz && \
   # Documentation cleanups
-  rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/syspre_pkg && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/document/examples  && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/document/DEMO  && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/document/benchmark  && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/document/help  && \
-  rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/src && \
-  rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/obj && \
-  rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/bin && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/gsdk/visualization/* && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/gsdk/document/examples  && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/gsdk/document/DEMO  && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/gsdk/document/benchmark  && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/gsdk/document/help  && \
   rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/gsdk/*.txt  && \
-  rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/Make* && \
-  rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/gsdk/include  && \
-  rm -Rf ${INSTALL_DIR}/app/${DEV_VERSION}/dev/gdk/gsdk/bin  && \
   # GUI cleanups
   rm -f ${INSTALL_DIR}/app/${DEV_VERSION}/bin/gui/server/node_modules/tar/test/dir-normalization.tar && \
   rm -f ${INSTALL_DIR}/app/${DEV_VERSION}/bin/gui/server/node_modules/tar-pack/test/fixtures/packed.tar && \

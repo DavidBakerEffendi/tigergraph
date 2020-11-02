@@ -37,27 +37,20 @@ RUN apt-get -qq update && \
   ./install.sh -n && \
   # Original cleanups
   rm -fR /home/tigergraph/tigergraph-* && \
-  rm -fR /home/tigergraph/tigergraph/dev/deploy_pkg && \
-  rm -f /home/tigergraph/tigergraph/gium_prod.tar.gz && \
-  rm -f /home/tigergraph/tigergraph/pkg_pool/tigergraph_*.tar.gz && \
+  rm -fR ${INSTALL_DIR}/dev/deploy_pkg && \
+  rm -f ${INSTALL_DIR}/gium_prod.tar.gz && \
+  rm -f ${INSTALL_DIR}/pkg_pool/tigergraph_*.tar.gz && \
   # Documentation cleanups
-  # rm -Rf ${INSTALL_DIR}/.syspre && \
   rm -Rf ${INSTALL_DIR}/document/examples  && \
   rm -Rf ${INSTALL_DIR}/document/DEMO  && \
   rm -Rf ${INSTALL_DIR}/document/benchmark  && \
   rm -Rf ${INSTALL_DIR}/document/help  && \
-  rm -Rf ${INSTALL_DIR}/dev/gdk/src && \
-  rm -Rf ${INSTALL_DIR}/dev/gdk/obj && \
-  rm -Rf ${INSTALL_DIR}/dev/gdk/bin && \
   rm -Rf ${INSTALL_DIR}/dev/gdk/gsdk/visualization/* && \
   rm -Rf ${INSTALL_DIR}/dev/gdk/gsdk/document/examples  && \
   rm -Rf ${INSTALL_DIR}/dev/gdk/gsdk/document/DEMO  && \
   rm -Rf ${INSTALL_DIR}/dev/gdk/gsdk/document/benchmark  && \
   rm -Rf ${INSTALL_DIR}/dev/gdk/gsdk/document/help  && \
   rm -Rf ${INSTALL_DIR}/dev/gdk/gsdk/*.txt  && \
-  rm -Rf ${INSTALL_DIR}/dev/gdk/Make* && \
-  rm -Rf ${INSTALL_DIR}/dev/gdk/gsdk/include  && \
-  rm -Rf ${INSTALL_DIR}/dev/gdk/gsdk/bin && \
   # GUI cleanups
   rm -f ${INSTALL_DIR}/bin/gui/server/node_modules/tar/test/dir-normalization.tar && \
   rm -f ${INSTALL_DIR}/bin/gui/server/node_modules/tar-pack/test/fixtures/packed.tar && \
