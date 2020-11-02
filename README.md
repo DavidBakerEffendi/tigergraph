@@ -9,6 +9,9 @@ The original version of the TigerGraph Docker image can be found
 
 For a detailed tutorial on how this image works, please read [my article on Medium](https://towardsdatascience.com/efficient-use-of-tigergraph-and-docker-5e7f9918bf53).
 
+Special thanks to [Bruno Šimić](https://www.linkedin.com/in/brunosimic/) from TigerGraph for 
+additional help on slimming the image down.
+
 ## Description
 
 The Debian image is Bitnami's minideb image as the base image. This can be built
