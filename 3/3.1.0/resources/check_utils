@@ -1,0 +1,1034 @@
+#!/bin/bash
+
+export LOG_DIR_r=/tmp/tigergraph_logs  # log directory on remote nodes
+export TGT_DIR1=/tmp/tigergraph_utils
+
+OSG=$(get_os)                                # e.g. RHEL 6.5, UBUNTU 14.04
+OS=$(echo "$OSG" | cut -d' ' -f1)            # e.g. RHEL, UBUNTU
+version=$(echo "$OSG" | cut -d' ' -f2)       # e.g. 6.5, 14.04
+OSV="$OS$(echo "$version" | cut -d'.' -f1)"  # e.g. RHEL6, UBUNTU14
+
+PREQ_TOOLS=("which" "tar" "curl" "ip" "more" "uuidgen" "netstat" "stat" "scp" "sshd")
+PREQ_PKGS_centos=("which" "tar" "curl" "iproute" "util-linux-ng" "util-linux-ng" "net-tools" "coreutils" "openssh-clients" "openssh-server")
+PREQ_PKGS_suse=("which" "tar" "curl" "iproute2" "util-linux" "util-linux" "net-tools" "coreutils" "openssh" "openssh")
+if [ "$OSV" = 'UBUNTU18' ]; then
+  PREQ_PKGS_ubuntu=("which" "tar" "curl" "iproute2" "util-linux" "uuid-runtime" "net-tools" "coreutils" "openssh-client" "openssh-server")
+else
+  PREQ_PKGS_ubuntu=("which" "tar" "curl" "iproute" "util-linux" "uuid-runtime" "net-tools" "coreutils" "openssh-client" "openssh-server")
+fi
+
+# the default ports to check
+# TODO: don't check 8123 since gsql only listen on localhost
+# use 8124 instead for the moment, we may change it back after gsql support HA
+DEFAULT_PORTS="30002,19999,14240,8124"
+
+# ssh/scp options
+o1="UserKnownHostsFile=/dev/null"
+o2="StrictHostKeyChecking=no"
+o3="PasswordAuthentication=no"
+
+# used to redirect sudo prompt and error into
+SSH_SUDO_CMD_LOG=/tmp/tigergraph_ssh_cmd.log
+
+# if user home is not in /home
+# or it is a symbolic link, ssh will not work
+add_SELinux_dependency(){
+  # remove policycoreutils dependency, rare met this issue
+  return
+  # semanage, restorecon are needed for restore SELinux context of ~/.ssh
+  # both are in policycoreutils
+  if [ "$OS" = "ROCKY" -o "$OS" = "SUSE" ]; then
+    return
+  fi
+  PREQ_TOOLS+=("semanage")
+  PREQ_PKGS_centos+=("policycoreutils-python")
+  PREQ_PKGS_suse+=("policycoreutils-python")
+  if [ "$OSV" = 'UBUNTU18' ]; then
+    PREQ_PKGS_ubuntu+=("policycoreutils-python-utils")
+  else
+    PREQ_PKGS_ubuntu+=("policycoreutils")
+  fi
+}
+
+check_system_env(){
+  if [[ $EUID -ne 0 ]]; then
+    error "Sudo or root rights are required to install TigerGraph software."
+    exit $E_PERMISSIONDENY
+  fi
+
+  prog "Checking operation system (OS) version ..."
+  check_os $OS $version
+
+  prog "Checking system prerequisite required tools ..."
+  if [ "$OS" = "RHEL" ]; then
+    check_preq_pkgs $OS "${#PREQ_TOOLS[@]}" "${PREQ_TOOLS[@]}" "${#PREQ_PKGS_centos[@]}" "${PREQ_PKGS_centos[@]}"
+  elif [ "$OS" = "SUSE" ]; then
+    check_preq_pkgs $OS "${#PREQ_TOOLS[@]}" "${PREQ_TOOLS[@]}" "${#PREQ_PKGS_suse[@]}" "${PREQ_PKGS_suse[@]}"
+  else
+    check_preq_pkgs $OS "${#PREQ_TOOLS[@]}" "${PREQ_TOOLS[@]}" "${#PREQ_PKGS_ubuntu[@]}" "${PREQ_PKGS_ubuntu[@]}"
+  fi
+
+  os_bit=$(uname -a)
+  if [[ "$os_bit" != *"x86_64"* ]] && [[ "$os_bit" != *"x64"* ]]; then
+    error "Unsupported OS architeture. A 64-bit OS is required."
+    exit $E_OSARCH
+  fi
+}
+
+check_result(){
+  local check_code=$1
+  local exit_code=$2
+  local mesg="$3"
+  if [ "$1" = 0 ]; then
+    note "$mesg succeeded"
+  else
+    error "$mesg failed"
+    exit $E_NOTVALIED
+  fi
+}
+
+check_license_key(){
+  # don't check license any more for v3 license
+  return
+  # for a very long license, the epoch time is not in the last 10 digits.
+  local len=${#GSQL_LIC_KEY}
+  if ! [ $len = 64 -o $len -ge 74 -a $(($len % 32)) = 10 ]; then
+    error "The input license key is INVALID. Please provide a valid one and retry."
+    exit $E_INVALIDLICENSE
+  fi
+}
+
+check_replicas_number(){
+  local replicas="$1"
+  local nodes_num="$2"
+  if ! [[ "$replicas" =~ ^[0-9]+$ ]] || [ "$replicas" -lt 1 -o "$replicas" -gt $nodes_num ]; then
+    warn "The replicas number ($replicas) is not a valid integer between range (1-$nodes_num)"
+    return $E_NOTVALIED
+  fi
+}
+
+check_subset_nodes(){
+  local part="$1"
+  local all="$2"
+  IFS=','
+  for p in $part; do
+    if ! [[ "$all" == *"$p"* ]]; then
+      return $E_NOTVALIED
+    fi
+  done
+}
+
+check_ip(){
+  local ip="$1"
+  # support localhost if it is single node
+  if [ "$nodes_number" = 1 ] && [ "$ip" = "localhost" ]; then
+    return
+  fi
+  if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    return $E_NOTVALIED
+  fi
+}
+
+resolve_usr_pwd(){
+  local input_ssh_pwd="$1"
+  local ip="$2"
+  local output_pwd=""
+  if [ -f "$input_ssh_pwd" ]; then
+    output_pwd=$(cat "$input_ssh_pwd" | grep "^$ip:" | cut -d":" -f2- | xargs)
+  else
+    output_pwd="$input_ssh_pwd"
+  fi
+  if [ -z "$output_pwd" ]; then
+    error "$input_ssh_pwd doesn't have the password for node $ip"
+    exit $E_NOTVALIED
+  fi
+  echo "$output_pwd"
+}
+
+check_node_login(){
+  if $IS_LOCAL; then
+    return
+  fi
+  local node="$1"
+  local ip=$2
+  if ! check_ip "$ip"; then
+    error "the obtained IP address ($ip) of node $node is not valid"
+    return $E_NOTVALIED
+  fi
+  if [ -z "$SUDO_USER" ]; then
+    error "the obtained sudo user name of node $node is empty"
+    return $E_NOTVALIED
+  fi
+  if [ "$CHOSEN_SUBMETHOD" = 'P' ]; then
+    if [ -z "$SUDO_USER_PWD" ]; then
+      error "the obtained sudo user password of node $node is empty"
+      return $E_NOTVALIED
+    fi
+    export SSHPASS="$(resolve_usr_pwd "$SUDO_USER_PWD" $ip)"
+    if ! sshpass -e ssh -o $o1 -o $o2 -p $SSH_PORT -n $SUDO_USER@$ip "echo" 1>/dev/null 2>&1; then
+      error "Cannot login to node $SUDO_USER@$ip by ssh with the obtained password."
+      return $E_NOTVALIED
+    fi
+    # must use /usr/bin/sudo instead of sudo in case of system may have
+    # /opt/rh/devtoolset-2/root/usr/bin/sudo, which doesn't accept any options
+    if ! sshpass -e ssh -o $o1 -o $o2 -p $SSH_PORT -tt -n $SUDO_USER@$ip \
+        "echo \"$SSHPASS\" | /usr/bin/sudo -S -p '' echo" 1>/dev/null 2>&1; then
+      error "Login to node $SUDO_USER@$ip successfully, but the user doesn't have sudo access."
+      return $E_NOTVALIED
+    fi
+  else
+    if [ -f "$SSH_KEY_FILE" ]; then
+      chmod 400 $SSH_KEY_FILE 1>/dev/null 2>&1
+      if ! ssh -i $SSH_KEY_FILE -o $o1 -o $o2 -o $o3 -p $SSH_PORT -n \
+          $SUDO_USER@$ip "echo" 1>/dev/null 2>&1; then
+        error "Cannot login to node $SUDO_USER@$ip by ssh with key file \"$SSH_KEY_FILE\"."
+        return $E_NOTVALIED
+      fi
+      if ! ssh -i $SSH_KEY_FILE -o $o1 -o $o2 -o $o3 -p $SSH_PORT -tt -n $SUDO_USER@$ip \
+          "/usr/bin/sudo -n echo" 1>/dev/null 2>&1; then
+        error "Login to node $SUDO_USER@$ip successfully, but the user doesn't have sudo access or
+doesn't enable NOPASSWD for all commands in /etc/sudoers."
+        return $E_NOTVALIED
+      fi
+    else
+      # ssh without password
+      if ! ssh -o $o1 -o $o2 -o $o3 -p $SSH_PORT -n $SUDO_USER@$ip "echo" 1>/dev/null 2>&1; then
+        error "Cannot login to node $SUDO_USER@$ip by ssh without password."
+        return $E_NOTVALIED
+      fi
+      if ! ssh -o $o1 -o $o2 -o $o3 -p $SSH_PORT -tt -n $SUDO_USER@$ip \
+          "/usr/bin/sudo -n echo" 1>/dev/null 2>&1; then
+        error "Login to node $SUDO_USER@$ip successfully, but the user doesn't have sudo access or
+doesn't enable NOPASSWD for all commands in /etc/sudoers."
+        return $E_NOTVALIED
+      fi
+    fi
+  fi
+}
+
+ssh_tigergraph_cmd(){
+  local ip=$1
+  local cmd="$2"
+
+  # don't change system to allow password authentication, use sudo user to workaround
+  CMDS=$(cat <<EOL
+#!/bin/bash
+# use this way to avoid input password when call su
+su --login $GSQL_USER -c "$cmd"
+EOL
+)
+  # use heredoc to avoid scp
+  ssh_sudo_cmd $ip "$CMDS"
+}
+
+# ssh_sudo_cmd runs cmd with cmd output stderr redirected to stdout
+ssh_sudo_cmd(){
+  local ip=$1
+  local cmd="$2"
+  if $IS_LOCAL; then
+    if [[ $EUID -eq 0 ]]; then
+      bash -c "$cmd"
+      return
+    else
+      /usr/bin/sudo bash -c "$cmd"
+      return
+    fi
+  fi
+  local on="-n"
+  # do not run ssh in the background, need to answer question
+  if [ "$3" = "no" ]; then
+    on=""
+  fi
+  if [ "$CHOSEN_SUBMETHOD" = "P" ]; then
+    export SSHPASS="$(resolve_usr_pwd "$SUDO_USER_PWD" $ip)"
+    # SSH with password
+    # use sh -c \"$cmd\" to execute multiple commands
+    # use 2> fd to silence the sudo password prompt
+    # use 2>&1 for cmd run inside bash, so error won't be append to "[sudo] password for xxx"
+    sshpass -e ssh -q -o $o1 -o $o2 -p $SSH_PORT -tt $on $SUDO_USER@$ip \
+        "echo \"$SSHPASS\" | /usr/bin/sudo -S bash -c '$cmd 2>&1' 2>>$SSH_SUDO_CMD_LOG"
+  else
+    if [ -f "$SSH_KEY_FILE" ]; then
+      # use ssh pem key file
+      ssh -i $SSH_KEY_FILE -q -o $o1 -o $o2 -o $o3 -p $SSH_PORT -tt $on \
+          $SUDO_USER@$ip "/usr/bin/sudo bash -c '$cmd'"
+    else
+      # SSH without password or key file
+      ssh -q -o $o1 -o $o2 -o $o3 -p $SSH_PORT -tt $on \
+          $SUDO_USER@$ip "/usr/bin/sudo bash -c '$cmd'"
+    fi
+  fi
+}
+
+ssh_sudo_cmd_background(){
+  local ip=$1
+  local cmd="$2"
+  if $IS_LOCAL; then
+    if [[ $EUID -eq 0 ]]; then
+      bash -c "$cmd"
+      return
+    else
+      /usr/bin/sudo bash -c "$cmd &"
+      return
+    fi
+  fi
+  # run ssh in the background
+  if [ "$CHOSEN_SUBMETHOD" = "P" ]; then
+    export SSHPASS="$(resolve_usr_pwd "$SUDO_USER_PWD" $ip)"
+    # SSH with password
+    # '-tt' is not compatiable with '-f' option but here sudo need TTY
+    # to run a ssh sudo command in backgound use '-b' option
+    # we use nohup to avoid background cmd being killed by os when ssh session is done
+    # take care of those escape double quotes, modify it only if you are confident enough that it is correct
+    sshpass -e ssh -q -o $o1 -o $o2 -p $SSH_PORT -tt -n \
+       $SUDO_USER@$ip "nohup bash -c \"echo \\\"$SSHPASS\\\" | /usr/bin/sudo -S -b bash -c \\\"$cmd\\\"\" 1>/dev/null 2>&1"
+  else
+    if [ -f "$SSH_KEY_FILE" ]; then
+      # use ssh pem key file
+      ssh -i $SSH_KEY_FILE -q -o $o1 -o $o2 -o $o3 -p $SSH_PORT -f -n \
+          $SUDO_USER@$ip "nohup bash -c \"/usr/bin/sudo bash -c \\\"$cmd\\\"\" 1>/dev/null 2>&1"
+    else
+      # SSH without password or key file
+      ssh -q -o $o1 -o $o2 -o $o3 -p $SSH_PORT -f -n \
+          $SUDO_USER@$ip "nohup bash -c \"/usr/bin/sudo bash -c \\\"$cmd\\\"\" 1>/dev/null 2>&1"
+    fi
+  fi
+}
+
+scp_files_to_node(){
+  local ip=$1
+  local target_path=$2
+  local source_files="$3"
+  local reverse=false
+  if [ "$4" = "reverse" ]; then
+    reverse=true
+  fi
+  if $IS_LOCAL; then
+    IFS=' ' read -ra files <<< "$source_files"
+    for f in "${files[@]}"; do
+      cp -r $f $target_path
+    done
+    return
+  fi
+  if [ "$CHOSEN_SUBMETHOD" = "P" ]; then
+    export SSHPASS="$(resolve_usr_pwd "$SUDO_USER_PWD" $ip)"
+    # SSH with password
+    if $reverse; then
+      sshpass -e scp -q -o $o1 -o $o2 -P $SSH_PORT -r \
+          $SUDO_USER@$ip:"$source_files" $target_path
+    else
+      eval sshpass -e scp -q -o $o1 -o $o2 -P $SSH_PORT -r \
+          $source_files $SUDO_USER@$ip:$target_path
+    fi
+  else
+    if [ -f "$SSH_KEY_FILE" ]; then
+      # use ssh pem key file
+      if $reverse; then
+        scp -i $SSH_KEY_FILE -q -o $o1 -o $o2 -o $o3 -P $SSH_PORT -r \
+            $SUDO_USER@$ip:"$source_files" $target_path
+      else
+        eval scp -i $SSH_KEY_FILE -q -o $o1 -o $o2 -o $o3 -P $SSH_PORT -r \
+            $source_files $SUDO_USER@$ip:$target_path
+      fi
+    else
+      # SSH without password or key file
+      if $reverse; then
+        # cannot use eval here
+        scp -q -o $o1 -o $o2 -o $o3 -P $SSH_PORT -r \
+            $SUDO_USER@$ip:"$source_files" $target_path
+      else
+        eval scp -q -o $o1 -o $o2 -o $o3 -P $SSH_PORT -r \
+            $source_files $SUDO_USER@$ip:$target_path
+      fi
+    fi
+  fi
+  local rc=$?
+  # for remote installation, reverse scp $file is not located in $ip node
+  # see [GF-802]
+  if ! $reverse; then
+    # add read/execute permission to file, in case of umask=0077
+    IFS=' ' read -ra array <<< "$source_files"
+    for file in "${array[@]}"; do
+      file=${file##*/}
+      ssh_sudo_cmd $ip "f=$target_path; while [[ \$f != / ]]; do chmod a+rx \$f; f=\$(dirname \$f); done; \
+                        chmod -R a+rx $target_path/$file;"
+      rc_t=$?
+      [ "$rc" = 0 ] && rc=$rc_t
+    done
+  fi
+  return $rc
+}
+
+# IUM has fixed use ip to check remote/local server errors
+get_internal_ip(){
+  local node="$1"
+  local ip=$2
+  if [ -z "$target_path" ]; then
+    target_path=/tmp/tigergraph_utils/
+  fi
+  #scp_files_to_node $ip $target_path $BASE_DIR/utils
+  ssh_sudo_cmd $ip "bash $target_path/utils/get_internal_ip.sh $ip no 2>/dev/null"
+}
+
+warn_user_system_change(){
+  if [ "$nodes_number" = 1 ]; then
+    # single node no need to setup firewall ntp
+    return
+  fi
+  local use_default=$1   # user take the default
+  echo
+  note "The installer will make the following changes to system:
+(it is recommended to accept the changes, but the installation will continue if they are rejected.)"
+  mesg_cyan "1. Set NTP system time synchronization, do you accept?"
+  echo -n "(If rejected, it is user's responsiblity to synchronize the system time among cluster nodes) (y/N): "
+  # init to env SETUP_NTP if that is set
+  [ ! -z ${SETUP_NTP+x} ] && opt=${SETUP_NTP}
+  [ "$use_default" = false ] && read opt < /dev/tty
+  if [ "$opt" = "y" ] || [ "$opt" = "Y" ] || [ "$opt" = "true" ]; then
+    SET_NTP=true
+    echo "Accept"
+  else
+    SET_NTP=false
+    echo "Reject"
+  fi
+  unset opt
+  mesg_cyan "2. Set iptables (firewall) rules among cluster nodes, do you accept?"
+  echo -n "(If rejected, it is user's responsiblity to make tcp ports open among cluster nodes) (y/N): "
+  # init to env SETUP_FIREWALL if that is set
+  [ ! -z ${SETUP_FIREWALL+x} ] && opt=${SETUP_FIREWALL}
+  [ "$use_default" = false ] && read opt < /dev/tty
+  if [ "$opt" = "y" ] || [ "$opt" = "Y" ] || [ "$opt" = "true" ]; then
+    SET_FIREWALL=true
+    echo "Accept"
+  else
+    SET_FIREWALL=false
+    echo "Reject"
+  fi
+  local config_file=$BASE_DIR/utils/user_config
+  if ! grep SET_NTP $config_file 1>/dev/null 2>&1; then
+     echo "SET_NTP=\"$SET_NTP\"" >> $config_file
+  else
+    sed -i -e "s/SET_NTP=.*$/SET_NTP=\"$SET_NTP\"/g" $config_file
+  fi
+  if ! grep SET_FIREWALL $config_file 1>/dev/null 2>&1; then
+     echo "SET_FIREWALL=\"$SET_FIREWALL\"" >> $config_file
+  else
+    sed -i -e "s/SET_FIREWALL=.*$/SET_FIREWALL=\"$SET_FIREWALL\"/g" $config_file
+  fi
+}
+
+check_scp_tools(){
+  if $IS_LOCAL; then
+    return
+  fi
+  local miss_tool=""
+  if [ "$CHOSEN_SUBMETHOD" = 'P' ]; then
+    # use SSH password, must install sshpass
+    ! which sshpass 1>/dev/null 2>&1 && miss_tool="$miss_tool sshpass"
+  fi
+  ! which ssh 1>/dev/null 2>&1 && miss_tool="$miss_tool ssh"
+  ! which scp 1>/dev/null 2>&1 && miss_tool="$miss_tool scp"
+  if [ ! -z "$miss_tool" ]; then
+    error "Cannot find the tool(s):$miss_tool"
+    note "Please install the tool(s) on current machine and then retry."
+    exit $E_MISSTOOL
+  fi
+}
+
+check_login_and_scp_files_p(){
+  local m=$1
+  local ip=$2
+  echo "------------------------------------------------------------"
+  prog "Checking the login of node $m ..."
+  check_node_login "$m" "$ip"
+  if [ "$?" = 0 ]; then
+    note "Login to node $m succussfully"
+
+    # [GF-885] sudo bash is blocked in /etc/sudoers
+    # ec2-user ALL=(ALL) NOPASSWD: ALL, !/bin/bash, !CRON
+    if ! ssh_sudo_cmd $ip "echo -n"; then
+      error "User $SUDO_USER cannot run 'sudo bash', please check if it is blocked in /etc/sudoers"
+      return $E_ACTIONFAILED
+    fi
+
+    prog "Scp scripts to node $m ..."
+    local target_path=/tmp/tigergraph_utils/
+    if [ "$NODE_EXPANSION" != "true" ] && ! [[ "$TGT_DIR1" =~ ^"/tmp/" ]]; then
+      error "Target directory is not start with '/tmp/'"
+      return $E_ACTIONFAILED
+    else
+      target_path="$TGT_DIR1"
+    fi
+    if ! ssh_sudo_cmd $ip "rm -rf $target_path $LOG_DIR_r $SSH_SUDO_CMD_LOG; mkdir -p $LOG_DIR_r; mkdir -p $target_path"; then
+      error "Failed to \"mkdir -p $target_path\" on node $m ($ip)"
+      return $E_ACTIONFAILED
+    fi
+    ssh_sudo_cmd $ip "chown -R $SUDO_USER $target_path; chmod -R 777 $LOG_DIR_r"
+    # netcat.tar.gz is only 228KB
+    source_files="$BASE_DIR/utils $BASE_DIR/netcat.tar.gz"
+    if ! scp_files_to_node $ip "$target_path" "$source_files"; then
+      error "Failed to scp files ($source_files) to node $m ($ip)"
+      return $E_ACTIONFAILED
+    else
+      note "Scp files ($source_files) to node $m ($ip) succussfully"
+    fi
+  else
+    error "Login for node $m failed"
+    return 1
+  fi
+  return 0
+}
+
+check_cluster_config(){
+  echo
+  prog "Checking the cluster/node environment and configuration ..."
+  echo "------------------------------------------------------------"
+  check_license_key
+}
+
+check_login_and_scp_files() {
+  # for install failed and retry case, skip the steps which already done
+  if [ -f $MARK_DIR/LOGIN_SCP_SUCCESS ]; then
+    note "Login check and scp scripts already finished successfully, skip this step."
+    return
+  fi
+
+  local LOG_PRE=check_login_scp_files.log
+  local login_ip=""
+  local var=""
+  local i=0
+  local job="Checking login and scp functionality"
+  local mark_file=""
+  local children_pids=()
+  local nodes_arr=()
+  prog "$job in the cluster"
+  echo "------------------------------------------------------------"
+  if [ "$NODE_EXPANSION" = "true" ]; then
+    note "Skip job '$job' on the existing cluster $EXIST_NODES_MESG."
+  fi
+  local commas="${all_nodes//[^,]}"
+  local nodes_num=$((${#commas}+1))
+  IFS=','
+  for m in $all_nodes; do
+    local LOG=$LOG_DIR/${LOG_PRE}.$m
+    var="$m"
+    login_ip="${!var}"
+    i=$((i+1))
+
+    local parall_num=$i
+    if [ "$NODE_EXPANSION" = "true" ]; then
+      if [ $i -le "$EXIST_NODES_NUM" ]; then
+        continue
+      fi
+      parall_num=$((parall_num-EXIST_NODES_NUM))
+    fi
+
+    check_login_and_scp_files_p $m $login_ip &> $LOG &
+    children_pids+=("$!")
+    nodes_arr+=("$m")
+
+    # check if the scp jobs finished
+    if [ "$((parall_num%PARALLEL_FACTOR))" = 0 ] || [ "$i" = "$nodes_num" ]; then
+      if [ "$i" = "$nodes_num" ]; then
+        mark_file=LOGIN_SCP_SUCCESS
+      fi
+      check_background_jobs "$job" "$LOG_PRE" "$mark_file" "${#children_pids[@]}" \
+          "${children_pids[@]}" "${#nodes_arr[@]}" "${nodes_arr[@]}"
+      children_pids=()
+      nodes_arr=()
+    fi
+  done
+  echo "------------------------------------------------------------"
+}
+
+set_exist_node_env() {
+  source $EXIST_NODE_ENV
+}
+
+unset_exist_node_env() {
+  source $NEW_NODE_ENV
+}
+
+run_precheck_cluster() {
+  # for install failed and retry case, skip the steps which already done
+  if [ -f $MARK_DIR/PRECHECK_SUCCESS ]; then
+    note "Precheck each cluster node already finished successfully, skip this step."
+    return
+  fi
+
+  local job="Prechecking"
+  prog "$job each node in background concurrently ..."
+  echo "------------------------------------------------------------"
+  local i=0
+  IFS=','
+  for m in $all_nodes; do
+    local var="$m"
+    local ip="${!var}"
+    i=$((i+1))
+    first_node=false
+    if [ "$i" = 1 ]; then
+      first_node=true
+    fi
+    # run as deamon to make it non-blocking
+    ssh_sudo_cmd_background "$ip" "bash $TGT_DIR1/utils/pre_check_one_node $m $first_node $SECRET 1>$LOG_DIR_r/precheck.log.$m 2>&1"
+  done
+
+  i=0
+  # record all internal ip
+  local all_ips=""
+  # retrieve internal IP before check firewall
+  for m in $all_nodes; do
+    local var="$m"
+    local ip="${!var}"
+    local internal_IP=''
+    local config_file=$BASE_DIR/utils/user_config
+    if ! grep ${m}_internal $config_file 1>/dev/null 2>&1; then
+      # For existing nodes, use the input IP
+      echo "${m}_internal=\"$ip\"" >> $config_file
+    fi
+    i=$((i+1))
+    if [ "$NODE_EXPANSION" = "true" ] && [ "$i" -le "$EXIST_NODES_NUM" ]; then
+      if [ -z "$all_ips" ]; then
+        all_ips=$ip
+      else
+        all_ips="$all_ips,$ip"
+      fi
+      continue
+    fi
+
+    note "Retrieve the internal IP of $m ($ip)"
+    # retrieve the internal IP if it's not hostname
+    if [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+      # need to use internal IP if it is not hostname
+      ssh_sudo_cmd $ip "bash $TGT_DIR1/utils/get_internal_ip.sh $ip" 1>$LOG_DIR/get_internal_ip.log.$m 2>&1
+      internal_IP=$(cat $LOG_DIR/get_internal_ip.log.$m |grep 'Internal IP obtained:' |\
+                      egrep -o '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')
+      if [ -z "$internal_IP" ]; then
+        note "Obtained internal IP is empty"
+        internal_IP=$ip
+      else
+        note "Internal IP obtained: $internal_IP"
+        sed -i -e "s/${m}_internal=.*$/${m}_internal=\"$internal_IP\"/g" $config_file
+        if [ "$m" = "m1" ]; then
+          sed -i -e "s/NTP_server=.*$/NTP_server=\"$internal_IP\"/g" $config_file
+        fi
+      fi
+    else
+      echo "No need to get internal IP"
+      internal_IP=$ip
+    fi
+
+    if [ -z "$all_ips" ]; then
+      all_ips=$internal_IP
+    else
+      all_ips="$all_ips,$internal_IP"
+    fi
+  done
+
+  rm -f $LOG_DIR/precheck_res_all.log
+  rm -f $BASE_DIR/utils/miss_tools
+  echo
+  prog "Wait until $job on each node to finish, this may take a while ..."
+
+  if [ "$NODE_EXPANSION" = "true" ]; then
+    note "Skip job '$job' on the existing cluster $EXIST_NODES_MESG."
+  fi
+
+  # wait utill pre_check_one_node job on each machine is done
+  i=0
+  for m in $all_nodes; do
+    local var="$m"
+    local ip="${!var}"
+    i=$((i+1))
+    if [ "$NODE_EXPANSION" = "true" ] && [ $i -le "$EXIST_NODES_NUM" ]; then
+      # don't check firewall for existing nodes since the login credential maybe depricated
+      continue
+    fi
+    # note "Waiting the $job to be done on $m"
+    # don't print message here, group the message for each node together in next for loop
+    while ssh_sudo_cmd $ip "ps -ef | grep $TGT_DIR1/utils/pre_check_one_node | grep -qv grep"; do
+      # wait util finish
+      sleep 1
+    done
+  done
+
+  # start
+  local FAILED=false
+  local EXIST_DATA=false
+  local REMOVE_DATA=false
+  local EXIST_DEVELOPER=false
+  local EXIST_SERVICE=false
+  local exist_nodes=""
+  local exist_nodes1=""
+  local exist_nodes2=""
+  i=0
+  for m in $all_nodes; do
+    local var="$m"
+    local ip="${!var}"
+    i=$((i+1))
+    if [ "$NODE_EXPANSION" = "true" ] && [ $i -le "$EXIST_NODES_NUM" ]; then
+      # don't check firewall for existing nodes since the login credential maybe depricated
+      continue
+    fi
+    echo
+    note "Job $job on node $m done"
+    local log_r=$LOG_DIR_r/precheck.log.$m
+    local log_l=$LOG_DIR/precheck.log.$m
+    rm -f $log_l
+    rm -f $LOG_DIR/precheck_res.log
+    rm -f $LOG_DIR/miss_tools
+    scp_files_to_node $ip "$LOG_DIR" "$log_r $LOG_DIR_r/precheck_res.log $LOG_DIR_r/miss_tools" reverse
+    if [ ! -f "$log_l" ]; then
+      error "Failed to scp file ($log_r) from node $m ($ip) to current node."
+      FAILED=true
+      continue
+    fi
+
+    if ! grep -q REACH_THE_END $log_l; then
+      # collect the miss tools
+      cat $LOG_DIR/miss_tools 2>/dev/null 1>>$BASE_DIR/utils/miss_tools
+      error "Nr 1 - $job failed on node $m ($ip), please check the following log:
+      $log_l"
+      FAILED=true
+      continue
+    else
+      if [ "$NODE_EXPANSION" != "true" ] && [ "$i" = 1 ]; then
+        rm -f $BASE_DIR/ssh-key.tar.gz
+        scp_files_to_node $ip "$BASE_DIR" "/tmp/ssh-key.tar.gz" reverse
+      fi
+    fi
+    # collect the check results
+    echo -e "\n======== node $m ($ip) ========" >> $LOG_DIR/precheck_res_all.log
+    cat $LOG_DIR/precheck_res.log >> $LOG_DIR/precheck_res_all.log
+
+    if grep -q "Found existing Tigergraph config and data root" $LOG_DIR/precheck_res.log; then
+      warn "Found existing TigerGraph config and data root on node $m ($ip)."
+      EXIST_DATA=true
+      if [ -z "$exist_nodes" ]; then
+        exist_nodes=$m
+      else
+        exist_nodes="$exist_nodes,$m"
+      fi
+    fi
+
+    if grep -q "Found existing TigerGraph developer version: true" $LOG_DIR/precheck_res.log; then
+      warn "Found TigerGraph developer version on node $m ($ip)."
+      EXIST_DEVELOPER=true
+      if [ -z "$exist_nodes1" ]; then
+        exist_nodes1=$m
+      else
+        exist_nodes1="$exist_nodes1,$m"
+      fi
+    fi
+
+    if grep -q "Legacy services exist" $LOG_DIR/precheck_res.log; then
+      note "Found legacy services exist on node $m ($ip)."
+      EXIST_SERVICE=true
+      if [ -z "$exist_nodes2" ]; then
+        exist_nodes2=$m
+      else
+        exist_nodes2="$exist_nodes2,$m"
+      fi
+    fi
+
+    if [ "$nodes_number" = 1 ]; then
+       continue
+    fi
+  done
+
+  echo "------------------------------------------------------------"
+  if $FAILED; then
+    error "$job on one or more nodes failed"
+    exit $E_ACTIONFAILED
+  else
+    note "$job on all nodes succeeded"
+  fi
+  if [ "$NODE_EXPANSION" = "true" ]; then
+    UNINSTALL_DEVELOPER=true
+    return
+  fi
+
+  if $EXIST_DEVELOPER; then
+    warn "TigerGraph developer version found on node(s) ($exist_nodes1), they must be uninstalled before continuing."
+    echo -n "${bldred}Uninstall the developer platform (WARNING: all data will be lost)? (y/N): $txtrst"
+    if [ -z "$UNINSTALL_PLATFORM" ]; then
+      read opt < /dev/tty
+      if [ "$opt" != "y" ] && [ "$opt" != "Y" ]; then
+        mesg_red "Aborted by user!"
+        exit $E_CANCELBYUSER
+      fi
+    else
+      mesg_yellow "Force removal!"
+    fi
+    UNINSTALL_DEVELOPER=true
+  fi
+
+  if $EXIST_DATA; then
+    warn "Existing dataRoot found on node(s) ($exist_nodes)"
+    warn "If you are reinstalling tigergraph platform with a different cluster configuration, the existing dataRoot needs to be cleaned."
+    mesg1="Cleaning the old data root '$GSQL_DATA_ROOT'(WARNING: all data will be lost)? (y/N): "
+    echo -n "${bldred}${mesg1}$txtrst"
+    if [ -z "$UNINSTALL_PLATFORM" ]; then
+      read opt < /dev/tty
+      if [ "$opt" != "y" ] && [ "$opt" != "Y" ]; then
+        mesg_yellow "Skipped removing data root."
+      else
+        mesg_yellow "Data root $GSQL_DATA_ROOT will be removed!"
+        REMOVE_DATA=true
+      fi
+    else
+      REMOVE_DATA=true
+      mesg_yellow "Force removal!"
+    fi
+  fi
+
+  if $EXIST_SERVICE; then
+    warn "Legacy services exist on node(s) ($exist_nodes2), they need to be stopped before continuing."
+    mesg2="Stop legacy processes and continue to install platform? (y/N): "
+    echo -n "${bldred}${mesg2}$txtrst"
+    if [ -z "$UNINSTALL_PLATFORM" ]; then
+      read opt < /dev/tty
+      if [ "$opt" != "y" ] && [ "$opt" != "Y" ]; then
+        mesg_red "Aborted by user!"
+        exit $E_CANCELBYUSER
+      fi
+    else
+      mesg_yellow "Force removal!"
+    fi
+  fi
+
+  # call uninstall
+  if $EXIST_DEVELOPER || $EXIST_DATA || $EXIST_SERVICE; then
+    prog "Cleaning legacy services and data on each node..."
+    echo "------------------------------------------------------------"
+    run_uninstall_legacy_node
+    if $FAILED; then
+      error "Cleaning legacy services and data on one or more nodes failed"
+      exit $E_ACTIONFAILED
+    else
+      note "Successfully cleaned legacy services and data on all nodes"
+    fi
+  fi
+  echo
+
+  # setup firewall with internal ip before check port access
+  echo
+  if [ "$SET_FIREWALL" = "true" ]; then
+    i=0
+    for m in $all_nodes; do
+      local var="$m"
+      local ip="${!var}"
+      i=$((i+1))
+      if [ "$NODE_EXPANSION" = "true" ]; then
+        if [ "$i" -le "$EXIST_NODES_NUM" ]; then
+          set_exist_node_env
+        else
+          unset_exist_node_env
+        fi
+      fi
+      echo
+      prog "Setup the firewall rules on $m ($ip) in background, you may check the log at:"
+      ssh_sudo_cmd $ip "bash $TGT_DIR1/utils/setup_firewall_on_nodes.sh '$all_ips'" 1>$LOG_DIR/setup_firewall.log.$m 2>&1 &
+      echo "$LOG_DIR/setup_firewall.log.$m"
+    done
+  else
+    warn "Skip setting iptables (firewall) rules"
+  fi
+
+  prog "Wait until setup firewall on each node to finish, this may take a while ..."
+  if [ "$NODE_EXPANSION" = "true" ]; then
+    note "Skip job 'setup firewall' on the existing cluster $EXIST_NODES_MESG."
+  fi
+
+  # wait utill setup_firewall_on_nodes job on each machine is done
+  i=0
+  for m in $all_nodes; do
+    local var="$m"
+    local ip="${!var}"
+    i=$((i+1))
+    if [ "$NODE_EXPANSION" = "true" ] && [ $i -le "$EXIST_NODES_NUM" ]; then
+      # don't check firewall for existing nodes since the login credential maybe depricated
+      continue
+    fi
+    # note "Waiting the $job to be done on $m"
+    # don't print message here, group the message for each node together in next for loop
+    while ssh_sudo_cmd $ip "ps -ef | grep $TGT_DIR1/utils/setup_firewall_on_nodes.sh | grep -qv grep"; do
+      # wait util finish
+      sleep 1
+    done
+  done
+
+  prog "Checking ports access in the cluster..."
+  echo "------------------------------------------------------------"
+  #do port checks
+  start_nc_servers
+  if $FAILED; then
+    error "The start_nc_servers on one or more nodes failed"
+    stop_nc_servers
+    exit $E_ACTIONFAILED
+  fi
+  check_ports
+  stop_nc_servers
+  if $FAILED; then
+    error "The check_ports on one or more nodes failed"
+    exit $E_ACTIONFAILED
+  fi
+  echo "------------------------------------------------------------"
+
+  touch $MARK_DIR/PRECHECK_SUCCESS
+}
+
+check_ports() {
+    for m in $all_nodes; do
+      local var="$m"
+      local ip="${!var}"
+      # check ports open
+      # [NOTE]: if the existing nodes sudo login is deprecated, the port check will fail!
+      #         One workaround is to keep services up on existing nodes.
+      local nc_log=$LOG_DIR/ports_check.log.$m
+      if ssh_sudo_cmd $ip "bash /tmp/netcat/check_ports.sh '$all_ips'" 1> $nc_log 2>&1; then
+        note "Node $m ($ip) port check passed"
+      else
+        error "Node $m ($ip) cannot access the required ports of one or more cluster nodes, please check the log: $nc_log"
+        FAILED=true
+      fi
+    done
+}
+
+start_nc_servers() {
+  for m in $all_nodes; do
+    # kill the nc services
+    local var="$m"
+    local ip="${!var}"
+    if ! ssh_sudo_cmd "$ip" "bash $TGT_DIR1/utils/start_nc_server.sh $OSV $DEFAULT_PORTS"; then
+      error "Failed to start nc servers on node $m($ip)"
+      FAILED=true
+    fi
+  done
+}
+
+stop_nc_servers() {
+    # stop all nc server process at this point
+  for m in $all_nodes; do
+    # kill the nc services
+    local var="$m"
+    local ip="${!var}"
+    ssh_sudo_cmd "$ip" "pkill -9 -f '^/tmp/netcat/nc -k -l'" &>/dev/null
+  done
+}
+
+run_uninstall_legacy_node() {
+  local job
+  job="Stopping legacy services"
+  # run uninstall script in parellel
+  i=0
+  for m in $all_nodes; do
+    local var="$m"
+    local ip="${!var}"
+    i=$((i+1))
+    local uninstall_log=$LOG_DIR_r/uninstall_node.log.$m
+    if ! ssh_sudo_cmd $ip "bash $TGT_DIR1/utils/uninstall_one_node $REMOVE_DATA $UNINSTALL_DEVELOPER" 1>$uninstall_log 2>&1; then
+      error "Nr 2 - $job failed on node $m ($ip), please check the following log: $uninstall_log"
+      cat $uninstall_log
+      FAILED=true
+    fi
+  done
+}
+
+run_setup_and_install_binary() {
+  # for install failed and retry case, skip the steps which already done
+  if [ -f $MARK_DIR/SETUP_INSTALL_SUCCESS ]; then
+    note "Setup syspre and install binary on each cluster node already finished successfully, skip this step."
+    return
+  fi
+
+  echo
+  local job="Installing TigerGraph platform"
+  prog "$job on each node in background concurrently, this may take approximately 10 minutes..."
+  echo "------------------------------------------------------------"
+  if [ "$NODE_EXPANSION" = "true" ]; then
+    note "Skip job '$job' on the existing cluster $EXIST_NODES_MESG."
+  fi
+  local i=0
+  IFS=','
+  for m in $all_nodes; do
+    i=$((i+1))
+    if [ "$NODE_EXPANSION" = "true" ] && [ $i -le "$EXIST_NODES_NUM" ]; then
+      continue
+    fi
+    local var="$m"
+    local ip="${!var}"
+    local ntp_master=false
+    if [ "$ip" = "$NTP_server" ]; then
+      ntp_master=true
+    fi
+    # run as deamon to make it non-blocking
+    ssh_sudo_cmd_background $ip "bash $TGT_DIR2/utils/setup_install_one_node $ntp_master 1>$LOG_DIR_r/setup_install.log.$m 2>&1"
+  done
+
+  local FAILED=false
+  i=0
+  for m in $all_nodes; do
+    local var="$m"
+    local ip="${!var}"
+
+    i=$((i+1))
+    if [ "$NODE_EXPANSION" = "true" ] && [ $i -le "$EXIST_NODES_NUM" ]; then
+      continue
+    fi
+
+    # check one by one
+    while ssh_sudo_cmd $ip "ps -ef | grep $TGT_DIR2/utils/setup_install_one_node | grep -qv grep"; do
+      # wait util finish
+      sleep 1
+    done
+    # check the results
+    local log_r=$LOG_DIR_r/setup_install.log.$m
+    local log_l=$LOG_DIR/setup_install.log.$m
+    rm -f $log_l
+    scp_files_to_node $ip "$LOG_DIR" "$log_r" reverse
+    local ecode=$?
+    if [ ! -f "$log_l" ]; then
+      error "Failed to scp file ($log_r) from node $m ($ip) to current node, error code is $ecode"
+      FAILED=true
+      continue
+    fi
+    if ! grep -q REACH_THE_END $log_l; then
+      error "Nr 3 - $job failed on node $m ($ip), please check the following log:
+      $log_l"
+      cat $log_l
+      FAILED=true
+    else
+      note "$job on node $m is done"
+    fi
+  done
+
+  echo "------------------------------------------------------------"
+  # source bashrc at the end of installation on local node when installation user is same as tigergraph user
+  if [[ $USER == $GSQL_USER ]]; then
+    bash source ~/.bashrc 1>/dev/null 2>&1
+  fi
+
+  if $FAILED; then
+    error "$job on one or more nodes failed"
+    exit $E_ACTIONFAILED
+  else
+    note "Installation on all nodes succeeded"
+    touch $MARK_DIR/SETUP_INSTALL_SUCCESS
+  fi
+}
+
+# check local sudo privilege
+check_local_sudo_privilege() {
+  prog "Checking sudo privilege..."
+  if [[ $EUID != 0 ]] && ! sudo -n pwd 1>/dev/null 2>&1; then
+    error "Sudo or root privilege are required to install TigerGraph software on local machine, please run with 'sudo'"
+    exit "$E_PERMISSIONDENY"
+  fi
+  # Set default values for local installing mode
+  SUDO_USER=$(whoami)
+  SSH_PORT=22
+  # update user_config
+  echo "SSH_PORT=\"$SSH_PORT\"" >> $BASE_DIR/utils/user_config
+  echo "SUDO_USER=\"$SUDO_USER\"" >> $BASE_DIR/utils/user_config
+}
