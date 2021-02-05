@@ -51,7 +51,7 @@ Ubuntu 14.04, 16.04, 18.04; Debian 8; SUSE 12; Amazon Linux 2016.03 to 2018.03; 
      exit $E_UNSUPPORTOS
   fi
   if [ "$OS" = "UBUNTU" ]; then
-    if [ "$version" != "14.04" -a "$version" != "16.04" -a "$version" != "18.04" ]; then
+    if [[ "$version" != "14.04" && "$version" != "16.04" && "$version" != "18.04" ]]; then
       error "$error_msg"
       exit $E_UNSUPPORTOS
     else
@@ -65,15 +65,17 @@ Ubuntu 14.04, 16.04, 18.04; Debian 8; SUSE 12; Amazon Linux 2016.03 to 2018.03; 
       note "OS check passed [OK]"
     fi
   elif [ "$OS" = "RHEL" ]; then
-    local ver_arr=(${version//./ })
-    if [ "${ver_arr[0]}" -lt "6" ] || [ "${ver_arr[0]}" -eq "6" -a "${ver_arr[1]}" -lt "5" ]; then
+    # the following one will end with one item array on docker centos 7.3, i.e. "${ver_arr[0]}" is "7 3"
+    # local ver_arr=(${version//./ })
+    IFS='.' read -r -a ver_arr <<< "$version"
+    if [[ "${ver_arr[0]}" -lt "6" || "${ver_arr[0]}" -eq "6" && "${ver_arr[1]}" -lt "5" ]]; then
       error "$error_msg"
       exit $E_UNSUPPORTOS
     else
       note "OS check passed [OK]"
     fi
   elif [ "$OS" = "SUSE" ]; then
-    local ver_arr=(${version//./ })
+    IFS='.' read -r -a ver_arr <<< "$version"
     if [ "${ver_arr[0]}" -lt "12" ]; then
       error "$error_msg"
       exit $E_UNSUPPORTOS
@@ -81,8 +83,8 @@ Ubuntu 14.04, 16.04, 18.04; Debian 8; SUSE 12; Amazon Linux 2016.03 to 2018.03; 
       note "OS check passed [OK]"
     fi
   elif [ "$OS" = "ROCKY" ]; then
-    local ver_arr=(${version//./ })
-    if [ "${ver_arr[0]}" -lt "6" ] || [ "${ver_arr[0]}" -eq "6" -a "${ver_arr[1]}" -eq "0" -a "${ver_arr[2]}" -lt "80" ]; then
+    IFS='.' read -r -a ver_arr <<< "$version"
+    if [[ "${ver_arr[0]}" -lt "6" || "${ver_arr[0]}" -eq "6" && "${ver_arr[1]}" -eq "0" && "${ver_arr[2]}" -lt "80" ]]; then
       error "$error_msg"
       exit $E_UNSUPPORTOS
     else
@@ -143,8 +145,10 @@ check_memory_capacity(){
   warn "Memory minimum reduced to 2GB"
   local min_kB=2000000
   local size=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-  let "size_GB = size / 1024 / 1024"
-  let "min_GB = min_kB / 1024 / 1024"
+  local size_GB
+  local min_GB
+  ((size_GB=size / 1024 / 1024))
+  ((min_GB=min_kB / 1024 / 1024))
   if [ "$min_GB" -lt 8 ]; then
     min_GB=8
   fi
@@ -170,21 +174,21 @@ check_cpu_number(){
 }
 
 check_root_space(){
-  local GSQL_ROOT_DIR=$1
-  # find the first exist directory of in path GSQL_ROOT_DIR
-  local f=$GSQL_ROOT_DIR
+  local gsql_root_dir=$1
+  # find the first exist directory of in path GSQL_APP_ROOT or GSQL_DATA_ROOT
+  local f=$gsql_root_dir
   while [[ $f != "/" ]]; do
     if [ -d "$f" ]; then
       break
     else
-      f=$(dirname $f)
+      f=$(dirname "$f")
     fi
   done
   size=$(df -Pk $f | tail -1 | awk '{print $4}')
-  let "size_GB = size / 1024 / 1024"
+  ((size_GB = size / 1024 / 1024))
   minimum=20
   if [ $size_GB -lt $minimum ]; then
-    warn "TigerGraph.Root.Dir: $GSQL_ROOT_DIR does NOT have enough available disk space: $size_GB GB, required at least $minimum GB"
+    warn "TigerGraph Root Directory: $gsql_root_dir does NOT have enough available disk space: $size_GB GB, required at least $minimum GB"
     return $E_DISKNOTENOUGH
   else
     note "Available disk space: $size_GB GB [ok]"
@@ -254,7 +258,7 @@ check_preq_pkgs(){
       note "If you have internet access, you may install them by command: \"apt-get install $miss_tool\""
     fi
     # the file is on remote node: /tmp/tigergraph_utils/utils/miss_tools
-    echo "$NODE_NAME:$OS:$miss_tool" > $BASE_DIR/utils/miss_tools
+    echo "$NODE_NAME:$OS:$miss_tool" > $LOG_DIR_r/miss_tools
     mesg_cyan "or run \"./install_tools.sh\", it will install all missing tools on related nodes."
     exit $E_MISSTOOL
   else
@@ -274,12 +278,13 @@ set_user(){
       note "Please create the home directory of $GSQL_USER, and retry."
       exit $E_FILENOTFOUND
     fi
-    echo "${GSQL_USER}:${GSQL_USER_PWD}" | chpasswd &>/dev/null
+    # don't change user password if it already exists
+    # echo "${GSQL_USER}:${GSQL_USER_PWD}" | chpasswd &>/dev/null
   else
     prog "Creating new user: ${GSQL_USER}"
     # always set GSQL_USER_HOME=/home/$GSQL_USER for new user
     # this will enable ssh, and no need to check HOME space
-    # mv ~/.syspre, ~/.gium, ~/.gsql* to $GSQL_ROOT_DIR, and create symbolic links
+    # mv ~/.syspre, ~/.gium, ~/.gsql* to $GSQL_APP_ROOT, and create symbolic links
     home_path="/home/$GSQL_USER"
     note "User (${GSQL_USER}) home directory is: $home_path"
     # the directory $home_path may already exist
@@ -291,110 +296,38 @@ set_user(){
   # don't use '-R', if HOME is large, -R will take very long time
   chown $GSQL_USER $GSQL_USER_HOME
   # make sure the realpath belongs to GSQL_USER if GSQL_USER_HOME is a symbolic link
-  chown $GSQL_USER $(cd $GSQL_USER_HOME && pwd -P)
+  chown $GSQL_USER "$(cd $GSQL_USER_HOME && pwd -P)"
 }
 
 set_root(){
-  mkdir -p $GSQL_ROOT_DIR
-  check_fail $? $E_CREATEPATHFAIL "${bldred}Failed to creat install directory: ${GSQL_ROOT_DIR}. Program terminated. $txtrst"
-  local fs_type=$(df -PT $GSQL_ROOT_DIR | tail -1 | awk '{print $2}')
+  note "Setting tigergraph root dir: $root_dir"
+  local root_dir=$1
+  #find deepest exist folder
+  local parent_dir=$root_dir
+  while ! [ -d $parent_dir ]; do parent_dir=$(dirname $parent_dir); done
+  mkdir -p "$root_dir"
+  check_fail $? $E_CREATEPATHFAIL "${bldred}Failed to creat install directory: ${root_dir}. Program terminated. $txtrst"
+  local fs_type=$(df -PT $root_dir | tail -1 | awk '{print $2}')
   if [ "$fs_type" = "tmpfs" ]; then
-    error "TigerGraph.Root.Dir installation directory ($GSQL_ROOT_DIR) cannot be 'tmpfs' filesystem type."
-    note "Please specfiy a non tmpfs type TigerGraph.Root.Dir installation path, and retry."
+    error "TigerGraph.App.Root installation directory ($root_dir) cannot be 'tmpfs' filesystem type."
+    note "Please specfiy a non tmpfs type TigerGraph.App.Root installation path, and retry."
     exit $E_CREATEPATHFAIL
   fi
-  # set +rx permissions to GSQL_ROOT_DIR directory and all its parent directores
-  # start from the GSQL_ROOT_DIR, and works on every parent dir, until it encounters '/'
+  # set +rx permissions to GSQL_xxx_ROOT directory and its parent directores
   # Does not chmod '/'
-  local f=$GSQL_ROOT_DIR
+  local f=$root_dir
   while [[ $f != "/" ]]; do chmod a+rx $f; f=$(dirname $f); done;
-  # user GSQL_USER may not exist
-  # need to do one more time after set_user
-  chown -R $GSQL_USER $GSQL_ROOT_DIR &>/dev/null
-}
-
-create_root(){
-  echo -n "${bldgre}The tigergraph platform install directory: $GSQL_ROOT_DIR does NOT have enough space. Change this? (y/N): $txtrst"
-  read change
-  if [ "$change" = "y" -o "$change" = "Y" ]; then
-    new_root=''
-    while [ -z "$new_root" ]; do
-      echo -n "${bldgre}Please enter the new tigergraph platform install directory path:  $txtrst"
-      read new_root < /dev/tty
-      echo
-      if [ -z "$new_root" ]; then
-        warn "No path supplied"
-      elif [ "$new_root" = '/' ]; then
-        warn "Input path cannot be '/'"
-        new_pwd=''
-      elif [[ "$new_root" =~ [$' \t'] ]]; then
-        # match any space, tab character
-        warn "Input path contains space or tab character"
-        new_pwd=''
-      fi
-    done
-    GSQL_ROOT_DIR=$new_root
-  else
-    echo "${bldred}Abort by user $txtrst"
-    exit $E_DISKNOTENOUGH
-  fi
-
-  # Normalize the path, eliminate duplicate slashes '/'
-  normalize_root_dir
-
-  check_root_space $GSQL_ROOT_DIR
-  if [ "$?" != 0 ]; then
-    warn "The new path: $GSQL_ROOT_DIR still does NOT have enough disk space, installation terminated"
-    exit $E_DISKNOTENOUGH
-  fi
-
-  # set the new root directory
-  set_root
-}
-
-move_home(){
-  local OLD_HOME="$GSQL_USER_HOME"
-  GSQL_USER_HOME="$(cd $GSQL_ROOT_DIR/.. && pwd)/tigergraph_home"
-  mkdir -p $GSQL_USER_HOME
-  note "Changing TigerGraph User Home to be: $GSQL_USER_HOME"
-
-  size_root=$(df -Pk $GSQL_ROOT_DIR | tail -1 | awk '{print $4}')
-  let "size_root_GB = size_root / 1024 / 1024"
-  size_root_remain=$((size_root_GB - 20))
-  size_home=$(df -Pk $OLD_HOME | tail -1 | awk '{print $4}')
-  let "size_home_GB = size_home / 1024 / 1024"
-  if [ $size_root_remain -lt $size_home_GB ]; then
-    warn "Cannot move TigerGraph User Home from $OLD_HOME to $GSQL_USER_HOME due to insufficient disk space."
-    mesg_red "Installation terminated."
-    exit $E_DISKNOTENOUGH
-  fi
-  # copy everything from old home to new home
-  # don't use move because if move failed, then part of the files in old home will be lost
-  # cannot use "cp -r $OLD_HOME/* $GSQL_USER_HOME/", it only include non-hidden files
-  # cannot use "cp -r $OLD_HOME/.* $GSQL_USER_HOME/", it will include ".", ".."
-  if [ -d $OLD_HOME ]; then
-    for item in $(ls -a $OLD_HOME); do
-      if [ $item = "." -o $item = ".." ]; then
-        # ignore this two folder
-        continue
-      fi
-      cp -rfp $OLD_HOME/$item $GSQL_USER_HOME/
-      check_fail $? $E_DISKNOTENOUGH "${bldred}Failed to copy files/dir $OLD_HOME/$item to $GSQL_USER_HOME, \
-          please check if resource busy or other reasons. $txtrst"
-    done
-  fi
-
-  chown -R $GSQL_USER $GSQL_USER_HOME
-
-  if [ "$OLD_HOME" != "/" ]; then
-    mv $OLD_HOME ${OLD_HOME}_backup
-    ln -sf $GSQL_USER_HOME $OLD_HOME
-    check_fail $? $E_RESOURCEBUSY "${bldred}Failed to create symbolic link: ln -sf $GSQL_USER_HOME $OLD_HOME,  \
-        please create the link and retry $txtrst"
-    rm -rf ${OLD_HOME}_backup || :
-    chown -R $GSQL_USER $OLD_HOME
-  else
-    warn "Old tigergraph user home is '/', cannot create symbolic link"
-    exit $E_LINKFAIL
-  fi
+  # set +w permissions to GSQL_xxx_ROOT parent dir
+  chmod a+w $root_dir/.. || warn "add write permission for root_dir/.. failed"
+  # don't use '-R', if it is large, -R will take very long time
+  # to be safe, change chown tigergraph:tigergraph to separate cmds
+  chown $GSQL_USER "$root_dir"
+  chgrp $GSQL_USER "$root_dir"
+  # change all the new created folder to GSQL_USER as well
+  # since these parent folders might be created during installation as root privilege.
+  while [[ "$root_dir" != "$parent_dir" ]]; do 
+    chown $GSQL_USER "$root_dir";
+    chgrp $GSQL_USER "$root_dir" 
+    root_dir=$(dirname $root_dir); 
+  done;
 }

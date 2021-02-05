@@ -229,7 +229,7 @@ ssh_sudo_cmd(){
     if [[ $EUID -eq 0 ]]; then
       bash -c "$cmd"
       return
-    else
+    else 
       /usr/bin/sudo bash -c "$cmd"
       return
     fi
@@ -687,7 +687,7 @@ run_precheck_cluster() {
     if ! grep -q REACH_THE_END $log_l; then
       # collect the miss tools
       cat $LOG_DIR/miss_tools 2>/dev/null 1>>$BASE_DIR/utils/miss_tools
-      error "Nr 1 - $job failed on node $m ($ip), please check the following log:
+      error "$job failed on node $m ($ip), please check the following log:
       $log_l"
       FAILED=true
       continue
@@ -928,8 +928,7 @@ run_uninstall_legacy_node() {
     i=$((i+1))
     local uninstall_log=$LOG_DIR_r/uninstall_node.log.$m
     if ! ssh_sudo_cmd $ip "bash $TGT_DIR1/utils/uninstall_one_node $REMOVE_DATA $UNINSTALL_DEVELOPER" 1>$uninstall_log 2>&1; then
-      error "Nr 2 - $job failed on node $m ($ip), please check the following log: $uninstall_log"
-      cat $uninstall_log
+      error "$job failed on node $m ($ip), please check the following log: $uninstall_log"
       FAILED=true
     fi
   done
@@ -968,6 +967,7 @@ run_setup_and_install_binary() {
 
   local FAILED=false
   i=0
+  SECONDS=0
   for m in $all_nodes; do
     local var="$m"
     local ip="${!var}"
@@ -979,9 +979,13 @@ run_setup_and_install_binary() {
 
     # check one by one
     while ssh_sudo_cmd $ip "ps -ef | grep $TGT_DIR2/utils/setup_install_one_node | grep -qv grep"; do
+      # keep message in the same line
+      echo -ne "[$(date -d@${SECONDS} -u +%H:%M:%S)]: Installation is in progress, please wait...\r"
       # wait util finish
-      sleep 1
+      sleep 30
     done
+    # clean the line to avoid overlap
+    echo -ne "\033[2K"
     # check the results
     local log_r=$LOG_DIR_r/setup_install.log.$m
     local log_l=$LOG_DIR/setup_install.log.$m
@@ -994,9 +998,8 @@ run_setup_and_install_binary() {
       continue
     fi
     if ! grep -q REACH_THE_END $log_l; then
-      error "Nr 3 - $job failed on node $m ($ip), please check the following log:
+      error "$job failed on node $m ($ip), please check the following log:
       $log_l"
-      cat $log_l
       FAILED=true
     else
       note "$job on node $m is done"
