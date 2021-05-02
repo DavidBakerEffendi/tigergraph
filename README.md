@@ -1,5 +1,7 @@
 # TigerGraph Docker
 
+TLDR; `docker pull dbakereffendi/tigergraph:latest`
+
 The purpose of this repository is to create less bloated TigerGraph containers for 
 resource sensitive environments e.g. CI/CD. The Docker image starts `gadmin` when
 the container spins up.
